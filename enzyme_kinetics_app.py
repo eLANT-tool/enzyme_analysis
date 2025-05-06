@@ -1,105 +1,128 @@
-# enzyme_kinetics_app_v2.py
+# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
+import plotly.graph_objs as go
 from scipy.optimize import curve_fit
 from io import BytesIO
 import base64
+import plotly.io as pio
+
+st.set_page_config(layout="wide")
+st.title("酵素キネティクス解析ツール（複数サンプル対応）")
 
 # --- ヘルプメッセージ ---
 st.sidebar.markdown("## ヘルプ")
 st.sidebar.info(
     """
-    - Excelファイルは次の形式でアップロードしてください：
-      - A列：時間（秒）
-      - B列以降：各列に異なる基質濃度の吸光度（例：0.5mM, 1.0mM, ...）
-    - サンプルExcelをダウンロードし、そこにご自身のデータを貼り付けて使ってください。
-    - グラフはドラッグで範囲選択できます。初速度は選択範囲で再計算されます。
+    - Excelファイルは次の形式：
+        - A列：時間（秒）
+        - B列以降：各サンプルの吸光度（列名はサンプル名）
+    - ファイルをアップロード後、各列に対応する基質濃度[mM]を入力してください。
+    - グラフ上で範囲をドラッグして初速度を再計算します。
     """
 )
 
-# --- サンプルExcelの作成とダウンロード ---
+# --- サンプルExcel作成 ---
 def create_sample_excel():
     time = np.arange(0, 60, 5)
     data = {
         'Time (s)': time,
-        '0.5 mM': 0.02 + 0.007 * time,
-        '1.0 mM': 0.03 + 0.010 * time,
-        '2.0 mM': 0.04 + 0.014 * time
+        'Sample1': 0.02 + 0.008 * time,
+        'Sample2': 0.01 + 0.006 * time,
+        'Sample3': 0.00 + 0.004 * time
     }
-    df_sample = pd.DataFrame(data)
+    df = pd.DataFrame(data)
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df_sample.to_excel(writer, index=False, sheet_name='Sheet1')
+        df.to_excel(writer, index=False)
     return output.getvalue()
 
 sample_excel = create_sample_excel()
 b64 = base64.b64encode(sample_excel).decode()
-st.sidebar.markdown(f"[解析用Excelテンプレートをダウンロード](data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64})")
-
-# --- タイトル ---
-st.title("酵素キネティクス解析ツール（範囲選択・ドラッグ対応）")
+st.sidebar.markdown(f"[サンプルExcelをダウンロード](data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64})")
 
 # --- ファイルアップロード ---
-uploaded_file = st.file_uploader("Excelファイルをアップロード（時間＋複数濃度の吸光度列）", type=["xlsx", "xls"])
+uploaded_file = st.file_uploader("Excelファイルをアップロード", type=["xlsx"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
-    df.columns = [str(col).strip() for col in df.columns]
-
     if 'Time (s)' not in df.columns:
-        st.error("A列に 'Time (s)' 列が必要です。")
+        st.error("'Time (s)' 列が必要です")
     else:
         time = df['Time (s)']
-        concentrations = [col for col in df.columns if col != 'Time (s)']
+        sample_names = [col for col in df.columns if col != 'Time (s)']
 
-        velocity_data = []
+        st.subheader("基質濃度の入力")
+        concentrations = {}
+        cols = st.columns(len(sample_names))
+        for i, name in enumerate(sample_names):
+            concentrations[name] = cols[i].number_input(f"{name} [mM]", value=1.0, key=f"conc_{name}")
 
-        for conc in concentrations:
-            absorbance = df[conc]
+        # --- 初速度保存用 ---
+        velocities = []
+        conc_list = []
 
-            # グラフ描画
-            st.subheader(f"吸光度 vs 時間: {conc}")
-            fig = px.scatter(x=time, y=absorbance, labels={'x': '時間 (s)', 'y': '吸光度'})
-            fig.update_traces(mode='lines+markers')
-            fig.update_layout(dragmode='select')
-            fig.update_layout(height=500)
-            fig.add_trace(go.Scatter(x=time, y=absorbance, mode='lines+markers', name=conc))
-            selected_range = st.plotly_chart(fig, use_container_width=True)
+        st.subheader("個別グラフと初速度の算出")
+        for name in sample_names:
+            absorbance = df[name]
 
-            st.markdown(f"#### 初速度推定（{conc}）")
-            N = st.slider(f"{conc} の線形近似に使う点数", min_value=2, max_value=len(time), value=5, key=conc)
-            coeffs = np.polyfit(time[:N], absorbance[:N], 1)
-            init_velocity = coeffs[0]
-            st.write(f"**初速度:** {init_velocity:.4f} Abs/s")
-
-            velocity_data.append((float(conc.replace('mM', '').strip()), init_velocity))
-
-        # --- ミカエリス・メンテンプロット ---
-        if velocity_data:
-            st.subheader("ミカエリス・メンテンプロット")
-            substrate_concs, velocities = zip(*sorted(velocity_data))
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(
-                x=substrate_concs,
-                y=velocities,
-                mode='markers+lines',
-                name='初速度'
-            ))
-            fig2.update_layout(
-                xaxis_title='基質濃度 [mM]',
-                yaxis_title='初速度 [Abs/s]',
-                title='ミカエリス・メンテンプロット'
+            st.markdown(f"#### {name}")
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=time, y=absorbance, mode='lines+markers', name=name))
+            fig.update_layout(
+                dragmode='select',
+                title='時間 vs 吸光度',
+                xaxis_title='時間 (s)',
+                yaxis_title='吸光度',
+                height=400
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            selected = st.plotly_chart(fig, use_container_width=True)
 
-            def michaelis_menten(S, Vmax, Km):
-                return (Vmax * S) / (Km + S)
+            # 指定範囲から初速度計算（簡易：先頭N点）
+            N = st.slider(f"{name}の初速度計算点数", 2, len(time), 5, key=f"n_{name}")
+            coeffs = np.polyfit(time[:N], absorbance[:N], 1)
+            velocity = coeffs[0]
+            velocities.append(velocity)
+            conc_list.append(concentrations[name])
+            st.write(f"初速度: **{velocity:.4f} Abs/s**")
 
-            popt, _ = curve_fit(michaelis_menten, substrate_concs, velocities, maxfev=10000)
-            Vmax, Km = popt
-            st.success(f"Vmax = {Vmax:.4f} Abs/s, Km = {Km:.4f} mM")
+        st.subheader("重ねグラフ")
+        fig_all = go.Figure()
+        for name in sample_names:
+            fig_all.add_trace(go.Scatter(x=time, y=df[name], mode='lines+markers', name=name))
+        fig_all.update_layout(title="全サンプル吸光度 vs 時間", xaxis_title="時間 (s)", yaxis_title="吸光度")
+        st.plotly_chart(fig_all, use_container_width=True)
+
+        st.subheader("ミカエリス・メンテンプロット")
+        df_result = pd.DataFrame({
+            '基質濃度 [mM]': conc_list,
+            '初速度 [Abs/s]': velocities
+        })
+        st.dataframe(df_result)
+
+        fig_mm = go.Figure()
+        fig_mm.add_trace(go.Scatter(x=conc_list, y=velocities, mode='markers+lines'))
+        fig_mm.update_layout(title="初速度 vs 基質濃度", xaxis_title="[S] (mM)", yaxis_title="初速度 (Abs/s)")
+        st.plotly_chart(fig_mm, use_container_width=True)
+
+        # フィッティング
+        def michaelis_menten(S, Vmax, Km):
+            return (Vmax * S) / (Km + S)
+
+        popt, _ = curve_fit(michaelis_menten, conc_list, velocities)
+        Vmax, Km = popt
+        st.success(f"Km = {Km:.4f} mM, Vmax = {Vmax:.4f} Abs/s")
+
+        # --- CSV出力 ---
+        csv = df_result.to_csv(index=False).encode('utf-8')
+        st.download_button("解析結果をCSVでダウンロード", csv, "kinetics_results.csv", "text/csv")
+
+        # --- PDF出力（Plotly図をPNGに変換 → PDF出力も可能） ---
+        fig_bytes = pio.to_image(fig_mm, format='png')
+        b64_img = base64.b64encode(fig_bytes).decode()
+        href = f'<a href="data:image/png;base64,{b64_img}" download="mm_plot.png">ミカエリス・メンテングラフをPNGで保存</a>'
+        st.markdown(href, unsafe_allow_html=True)
+
 else:
-    st.warning("Excelファイルをアップロードしてください。")
+    st.info("解析対象のExcelファイルをアップロードしてください。")
