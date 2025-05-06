@@ -122,12 +122,23 @@ if uploaded_file:
         def michaelis_menten(S, Vmax, Km):
             return (Vmax * S) / (Km + S)
 
-        try:
-            popt, _ = curve_fit(michaelis_menten, df_result['基質濃度 [mM]'], df_result['初速度 [Abs/s]'])
-            Vmax, Km = popt
-            st.success(f"Vmax = {Vmax:.4f} Abs/s, Km = {Km:.4f} mM")
-        except:
-            st.error("フィッティングに失敗しました。データを確認してください。")
+        # 欠損値・無限値を除く
+        df_valid = df_result.replace([np.inf, -np.inf], np.nan).dropna()
+
+        if len(df_valid) >= 3:
+            try:
+                popt, _ = curve_fit(
+                    michaelis_menten,
+                    df_valid['基質濃度 [mM]'],
+                    df_valid['初速度 [Abs/s]'],
+                    bounds=(0, np.inf)
+                )
+                Vmax, Km = popt
+                st.success(f"Vmax = {Vmax:.4f} Abs/s, Km = {Km:.4f} mM")
+            except Exception as e:
+                st.error(f"フィッティングに失敗しました：{e}")
+        else:
+            st.warning("有効なデータが少なすぎてフィッティングできません（最低3点必要）")
 
         # --- 結果CSVダウンロード ---
         csv = df_result.to_csv(index=False).encode('utf-8')
