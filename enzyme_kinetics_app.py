@@ -44,105 +44,113 @@ uploaded_file = st.file_uploader("Excelファイルをアップロード（1列�
 
 if uploaded_file:
     try:
+        # Excelファイルを読み込む
         df = pd.read_excel(uploaded_file)
-        df.columns = [col.strip() for col in df.columns]
 
-        time = df.iloc[:, 0]
-        sample_names = df.columns[1:]
+        # 列名を確認し、適切に設定
+        if df.columns[0].lower() != 'time (s)':
+            st.error("1列目が「Time (s)」でない場合、適切なデータを確認してください。")
+        else:
+            # ヘッダーを確認してデータフレームを設定
+            df.columns = [col.strip() for col in df.columns]
 
-        # --- 全サンプルの重ね描きグラフ ---
-        st.markdown("### 吸光度 vs 時間（全サンプル）")
-        fig_all = go.Figure()
-        for name in sample_names:
-            fig_all.add_trace(go.Scatter(x=time, y=df[name], mode='lines+markers', name=name))
-        fig_all.update_layout(
-            title='吸光度の推移（複数サンプル）',
-            xaxis_title='時間 (s)',
-            yaxis_title='吸光度',
-            dragmode='zoom',
-            height=500
-        )
-        st.plotly_chart(fig_all, use_container_width=True)
+            # 時間とサンプルの取り出し
+            time = df.iloc[:, 0]
+            sample_names = df.columns[1:]
 
-        velocities = []
-        substrates = []
-
-        # --- 個別グラフで範囲指定と初速度 ---
-        for name in sample_names:
-            st.markdown(f"---\n### サンプル: {name}")
-            absorbance = df[name]
-
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=time, y=absorbance, mode='lines+markers', name=name))
-            fig.update_layout(
-                title=f'吸光度 vs 時間 - {name}',
+            # --- 全サンプルの重ね描きグラフ ---
+            st.markdown("### 吸光度 vs 時間（全サンプル）")
+            fig_all = go.Figure()
+            for name in sample_names:
+                fig_all.add_trace(go.Scatter(x=time, y=df[name], mode='lines+markers', name=name))
+            fig_all.update_layout(
+                title='吸光度の推移（複数サンプル）',
                 xaxis_title='時間 (s)',
                 yaxis_title='吸光度',
-                dragmode='select',
-                height=400
+                dragmode='zoom',
+                height=500
             )
-            selected = st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig_all, use_container_width=True)
 
-            st.write("範囲選択に使うインデックスを以下で設定してください：")
-            idx_range = st.slider(f"[{name}] データ範囲（インデックス）", 0, len(time)-2, (0, 5))
+            velocities = []
+            substrates = []
 
-            x_selected = time.iloc[idx_range[0]:idx_range[1]+1]
-            y_selected = absorbance.iloc[idx_range[0]:idx_range[1]+1]
-            coeffs = np.polyfit(x_selected, y_selected, 1)
-            velocity = coeffs[0]
+            # --- 個別グラフで範囲指定と初速度 ---
+            for name in sample_names:
+                st.markdown(f"---\n### サンプル: {name}")
+                absorbance = df[name]
 
-            st.write(f"**初速度:** {velocity:.4f} Abs/s")
-
-            velocities.append(velocity)
-            substrates.append(float(name.replace('mM', '').strip()))
-
-        # --- 初速度 vs 基質濃度グラフ ---
-        st.markdown("---\n### 初速度 vs 基質濃度")
-        df_result = pd.DataFrame({
-            '基質濃度 [mM]': substrates,
-            '初速度 [Abs/s]': velocities
-        }).sort_values(by='基質濃度 [mM]')
-        st.dataframe(df_result)
-
-        fig_rate = go.Figure()
-        fig_rate.add_trace(go.Scatter(
-            x=df_result['基質濃度 [mM]'],
-            y=df_result['初速度 [Abs/s]'],
-            mode='markers+lines',
-            name='初速度'
-        ))
-        fig_rate.update_layout(
-            title='ミカエリス・メンテンプロット',
-            xaxis_title='基質濃度 [mM]',
-            yaxis_title='初速度 [Abs/s]'
-        )
-        st.plotly_chart(fig_rate, use_container_width=True)
-
-        # --- Michaelis-Menten フィッティング ---
-        def michaelis_menten(S, Vmax, Km):
-            return (Vmax * S) / (Km + S)
-
-        # 欠損値・無限値を除く
-        df_valid = df_result.replace([np.inf, -np.inf], np.nan).dropna()
-
-        if len(df_valid) >= 3:
-            try:
-                popt, _ = curve_fit(
-                    michaelis_menten,
-                    df_valid['基質濃度 [mM]'],
-                    df_valid['初速度 [Abs/s]'],
-                    bounds=(0, np.inf)
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=time, y=absorbance, mode='lines+markers', name=name))
+                fig.update_layout(
+                    title=f'吸光度 vs 時間 - {name}',
+                    xaxis_title='時間 (s)',
+                    yaxis_title='吸光度',
+                    dragmode='select',
+                    height=400
                 )
-                Vmax, Km = popt
-                st.success(f"Vmax = {Vmax:.4f} Abs/s, Km = {Km:.4f} mM")
-            except Exception as e:
-                st.error(f"フィッティングに失敗しました：{e}")
-        else:
-            st.warning("有効なデータが少なすぎてフィッティングできません（最低3点必要）")
+                selected = st.plotly_chart(fig, use_container_width=True)
 
-        # --- 結果CSVダウンロード ---
-        csv = df_result.to_csv(index=False).encode('utf-8')
-        st.download_button("結果をCSVでダウンロード", csv, "result.csv", "text/csv")
+                st.write("範囲選択に使うインデックスを以下で設定してください：")
+                idx_range = st.slider(f"[{name}] データ範囲（インデックス）", 0, len(time)-2, (0, 5))
+
+                x_selected = time.iloc[idx_range[0]:idx_range[1]+1]
+                y_selected = absorbance.iloc[idx_range[0]:idx_range[1]+1]
+                coeffs = np.polyfit(x_selected, y_selected, 1)
+                velocity = coeffs[0]
+
+                st.write(f"**初速度:** {velocity:.4f} Abs/s")
+
+                velocities.append(velocity)
+                substrates.append(float(name.replace('mM', '').strip()))
+
+            # --- 初速度 vs 基質濃度グラフ ---
+            st.markdown("---\n### 初速度 vs 基質濃度")
+            df_result = pd.DataFrame({
+                '基質濃度 [mM]': substrates,
+                '初速度 [Abs/s]': velocities
+            }).sort_values(by='基質濃度 [mM]')
+            st.dataframe(df_result)
+
+            fig_rate = go.Figure()
+            fig_rate.add_trace(go.Scatter(
+                x=df_result['基質濃度 [mM]'],
+                y=df_result['初速度 [Abs/s]'],
+                mode='markers+lines',
+                name='初速度'
+            ))
+            fig_rate.update_layout(
+                title='ミカエリス・メンテンプロット',
+                xaxis_title='基質濃度 [mM]',
+                yaxis_title='初速度 [Abs/s]'
+            )
+            st.plotly_chart(fig_rate, use_container_width=True)
+
+            # --- Michaelis-Menten フィッティング ---
+            def michaelis_menten(S, Vmax, Km):
+                return (Vmax * S) / (Km + S)
+
+            # 欠損値・無限値を除く
+            df_valid = df_result.replace([np.inf, -np.inf], np.nan).dropna()
+
+            if len(df_valid) >= 3:
+                try:
+                    popt, _ = curve_fit(
+                        michaelis_menten,
+                        df_valid['基質濃度 [mM]'],
+                        df_valid['初速度 [Abs/s]'],
+                        bounds=(0, np.inf)
+                    )
+                    Vmax, Km = popt
+                    st.success(f"Vmax = {Vmax:.4f} Abs/s, Km = {Km:.4f} mM")
+                except Exception as e:
+                    st.error(f"フィッティングに失敗しました：{e}")
+            else:
+                st.warning("有効なデータが少なすぎてフィッティングできません（最低3点必要）")
+
+            # --- 結果CSVダウンロード ---
+            csv = df_result.to_csv(index=False).encode('utf-8')
+            st.download_button("結果をCSVでダウンロード", csv, "result.csv", "text/csv")
 
     except Exception as e:
         st.error(f"ファイルの読み込み中にエラーが発生しました：{e}")
